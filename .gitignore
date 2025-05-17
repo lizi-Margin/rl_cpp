@@ -1,0 +1,7 @@
+/.cache
+/.vscode
+/build
+/*.csv
+/*.csv.bac
+*.png
+/*.d
