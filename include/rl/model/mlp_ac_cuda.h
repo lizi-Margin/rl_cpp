@@ -5,9 +5,11 @@
 #include <vector>
 
 // CUDA函数声明
-extern "C" void cuda_initialize(int max_batch_size, int input_dim, int hidden_dim, int output_dim);
+extern "C" void cuda_initialize(int max_batch_size, int input_dim,
+                                int hidden_dim, int output_dim);
 extern "C" void cuda_cleanup();
-extern "C" void cuda_forward(const float *input, int batch_size, int input_dim, int hidden_dim,
+extern "C" void
+cuda_forward(const float *input, int batch_size, int input_dim, int hidden_dim,
              int output_dim, const float *shared_w, const float *shared_b,
              const float *actor_fc1_w, const float *actor_fc1_b,
              const float *actor_fc2_w, const float *actor_fc2_b,
@@ -15,9 +17,9 @@ extern "C" void cuda_forward(const float *input, int batch_size, int input_dim, 
              const float *critic_fc1_w, const float *critic_fc1_b,
              const float *critic_fc2_w, const float *critic_fc2_b,
              const float *critic_head_w, const float *critic_head_b,
-             float *actor_output, float *critic_output,
-             float *shared_output, float *actor_hidden, float *critic_hidden,
-             float *actor_fc2_output, float *critic_fc2_output);
+             float *actor_output, float *critic_output, float *shared_output,
+             float *actor_hidden, float *critic_hidden, float *actor_fc2_output,
+             float *critic_fc2_output);
 
 extern "C" void cuda_backward(
     const float *input, const float *shared_output, const float *actor_hidden,
@@ -41,7 +43,7 @@ namespace rl {
 class MlpAC : public AC_Base {
 private:
   unsigned int hidden_dim;
-  unsigned int max_batch_size;
+  unsigned int max_batch_size = 1024;
 
   nn::Sequential shared;
   nn::Sequential actor;
@@ -59,17 +61,32 @@ private:
   torch::Tensor cached_critic_fc2_output;
 
   // CUDA内存缓冲区
-  float* cuda_shared_output;
-  float* cuda_actor_hidden;
-  float* cuda_critic_hidden;
-  float* cuda_actor_fc2_output;
-  float* cuda_critic_fc2_output;
-  float* cuda_actor_output;
-  float* cuda_critic_output;
+  float *cuda_shared_output;
+  float *cuda_actor_hidden;
+  float *cuda_critic_hidden;
+  float *cuda_actor_fc2_output;
+  float *cuda_critic_fc2_output;
+  float *cuda_actor_output;
+  float *cuda_critic_output;
+
+  // 梯度缓冲区
+  float *grad_shared_w;
+  float *grad_shared_b;
+  float *grad_actor_fc1_w;
+  float *grad_actor_fc1_b;
+  float *grad_actor_fc2_w;
+  float *grad_actor_fc2_b;
+  float *grad_actor_head_w;
+  float *grad_actor_head_b;
+  float *grad_critic_fc1_w;
+  float *grad_critic_fc1_b;
+  float *grad_critic_fc2_w;
+  float *grad_critic_fc2_b;
+  float *grad_critic_head_w;
+  float *grad_critic_head_b;
 
 public:
-  MlpAC(unsigned int obs_dim, unsigned int action_dim,
-        unsigned int hidden_dim = 64, unsigned int max_batch_size = 1024);
+  MlpAC(unsigned int obs_dim, unsigned int action_dim, unsigned int hidden_dim);
   ~MlpAC();
 
   std::vector<torch::Tensor> forward(torch::Tensor obs) override;
@@ -81,14 +98,27 @@ public:
   torch::Tensor get_critic_fc2_w() const;
   torch::Tensor get_actor_head_w() const;
   torch::Tensor get_critic_head_w() const;
-  
+
   // 获取GPU上的缓存输出
   std::vector<torch::Tensor> get_cached_outputs() const;
-  
+
   // 使用CUDA梯度更新参数
   void update_parameters_with_cuda_gradients(float learning_rate);
-  
+
   // 直接获取CUDA梯度指针（用于优化器）
-  std::vector<float*> get_cuda_gradients() const;
+  std::vector<float *> get_cuda_gradients() const;
+
+  // 手动前向传播
+  void manual_forward(torch::Tensor obs);
+
+  // 手动反向传播
+  void manual_backward(torch::Tensor grad_actor_output,
+                       torch::Tensor grad_critic_output);
+
+  // 拷贝梯度回主机
+  void copy_gradients_to_host();
+
+  // 更新参数
+  void update_parameters(float learning_rate);
 };
 } // namespace rl

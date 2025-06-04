@@ -76,41 +76,6 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
                distEntropy_loss * entropy_coef);
 
   auto mlp_ac = dynamic_cast<rl::MlpAC *>(actor_and_critic.get());
-  auto intermediate_outputs = mlp_ac->get_cached_outputs();
-
-  // 计算梯度
-  auto grad_actor_output = actLogProbs.contiguous().data_ptr<float>();
-  auto grad_critic_output = advantages.contiguous().data_ptr<float>();
-
-  auto batch_size = obs.size(0);
-  auto input_dim = obs.size(1);
-  auto hidden_dim = mlp_ac->get_hidden_dim();
-  auto output_dim = actor_and_critic->get_n_actions();
-
-  auto actor_fc2_w = mlp_ac->get_actor_fc2_w().contiguous().data_ptr<float>();
-  auto critic_fc2_w = mlp_ac->get_critic_fc2_w().contiguous().data_ptr<float>();
-  auto actor_head_w = mlp_ac->get_actor_head_w().contiguous().data_ptr<float>();
-  auto critic_head_w =
-      mlp_ac->get_critic_head_w().contiguous().data_ptr<float>();
-
-  // 调用CUDA反向传播函数（所有计算在GPU上完成）
-  cuda_backward(
-      intermediate_outputs[0].contiguous().data_ptr<float>(), // input
-      intermediate_outputs[1].contiguous().data_ptr<float>(), // shared_output
-      intermediate_outputs[2].contiguous().data_ptr<float>(), // actor_hidden
-      intermediate_outputs[3].contiguous().data_ptr<float>(), // critic_hidden
-      intermediate_outputs[5]
-          .contiguous()
-          .data_ptr<float>(), // actor_fc2_output
-      intermediate_outputs[6]
-          .contiguous()
-          .data_ptr<float>(), // critic_fc2_output
-      intermediate_outputs[4].contiguous().data_ptr<float>(), // actor_output
-      intermediate_outputs[0].contiguous().data_ptr<float>(), // critic_output
-      grad_actor_output, grad_critic_output, batch_size, input_dim, hidden_dim,
-      output_dim, actor_fc2_w, critic_fc2_w, actor_head_w, critic_head_w,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
 
   // 使用CUDA梯度直接更新参数（避免数据传输回CPU）
   mlp_ac->update_parameters_with_cuda_gradients(learning_rate);
