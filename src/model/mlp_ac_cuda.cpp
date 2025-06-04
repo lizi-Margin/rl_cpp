@@ -1,6 +1,7 @@
 #include <c10/core/ScalarType.h>
 #include <cassert>
 #include <torch/torch.h>
+#include <cuda_runtime.h>
 
 #include "rl/model/mlp_ac_cuda.h"
 #include "rl/model/output_layers.h"
@@ -19,331 +20,259 @@ void xavier_init(Linear linear) {
   torch::nn::init::zeros_(linear->bias);
 }
 
-class MlpAC : public AC_Base {
-private:
-  unsigned int hidden_dim;
-  Sequential shared;
-  Sequential actor;
-  Sequential critic;
-  std::shared_ptr<CategoricalOutput> actor_head;
-  Linear critic_head;
+MlpAC::~MlpAC() {
+  // 释放CUDA分配的内存
+  cudaFree(cuda_shared_output);
+  cudaFree(cuda_actor_hidden);
+  cudaFree(cuda_critic_hidden);
+  cudaFree(cuda_actor_fc2_output);
+  cudaFree(cuda_critic_fc2_output);
+  cudaFree(cuda_actor_output);
+  cudaFree(cuda_critic_output);
+  
+  // 清理CUDA环境
+  cuda_cleanup();
+}
 
-  // 缓存中间结果
-  torch::Tensor cached_obs;
-  torch::Tensor cached_x;
-  torch::Tensor cached_hidden_actor;
-  torch::Tensor cached_hidden_critic;
-  torch::Tensor cached_actor_output;
-  torch::Tensor cached_value;
+unsigned int MlpAC::get_hidden_dim() const { return hidden_dim; }
 
-public:
-  MlpAC(unsigned int obs_dim, unsigned int n_actions,
-             unsigned int hidden_dim)
-      : AC_Base(obs_dim, n_actions), hidden_dim(hidden_dim), shared(nullptr),
-        actor(nullptr), critic(nullptr), actor_head(nullptr),
-        critic_head(nullptr) {
-    // 创建网络层
-    shared = Sequential(Linear(obs_dim, hidden_dim), Functional(torch::tanh));
-    actor =
-        Sequential(Linear(hidden_dim, hidden_dim),                          // 0
-                   Functional(torch::tanh), Linear(hidden_dim, hidden_dim), // 2
-                   Functional(torch::tanh));
-    critic = Sequential(Linear(hidden_dim, hidden_dim), Functional(torch::tanh),
-                        Linear(hidden_dim, hidden_dim), Functional(torch::tanh));
-    critic_head = Linear(hidden_dim, 1);
+torch::Tensor MlpAC::get_actor_fc2_w() const {
+  return actor->ptr(2)->as<Linear>()->weight.data();
+}
 
-    actor_head = std::make_shared<CategoricalOutput>(hidden_dim, n_actions);
+torch::Tensor MlpAC::get_critic_fc2_w() const {
+  return critic->ptr(2)->as<Linear>()->weight.data();
+}
 
-    // 应用Xavier初始化
-    // xavier_init(std::dynamic_pointer_cast<LinearImpl>(shared[0]));
-    // xavier_init(actor[0]->as<Linear>());
-    // xavier_init(actor[2]->as<Linear>());
-    // xavier_init(critic[0]->as<Linear>());
-    // xavier_init(critic[2]->as<Linear>());
-    // xavier_init(critic_head);
+torch::Tensor MlpAC::get_actor_head_w() const {
+  return actor_head->get_linear()->weight.data();
+}
 
-    // 注册模块
-    register_module("shared", shared);
-    register_module("actor", actor);
-    register_module("critic", critic);
-    register_module("critic_head", critic_head);
-    register_module("actor_head", actor_head);
+torch::Tensor MlpAC::get_critic_head_w() const {
+  return critic_head->weight.data();
+}
 
-    train();
+std::vector<torch::Tensor> MlpAC::get_cached_outputs() const {
+  return {cached_shared_output, cached_actor_hidden, cached_critic_hidden,
+          cached_actor_output, cached_critic_output, 
+          cached_actor_fc2_output, cached_critic_fc2_output};
+}
+
+MlpAC::MlpAC(unsigned int obs_dim, unsigned int n_actions,
+             unsigned int hidden_dim, unsigned int max_batch_size)
+    : AC_Base(obs_dim, n_actions), hidden_dim(hidden_dim), max_batch_size(max_batch_size),
+      shared(nullptr), actor(nullptr), critic(nullptr), actor_head(nullptr),
+      critic_head(nullptr) {
+  // 创建网络层
+  shared = Sequential(Linear(obs_dim, hidden_dim), Functional(torch::tanh));
+  actor =
+      Sequential(Linear(hidden_dim, hidden_dim),                          // 0
+                 Functional(torch::tanh), Linear(hidden_dim, hidden_dim), // 2
+                 Functional(torch::tanh));
+  critic = Sequential(Linear(hidden_dim, hidden_dim), Functional(torch::tanh),
+                      Linear(hidden_dim, hidden_dim), Functional(torch::tanh));
+  critic_head = Linear(hidden_dim, 1);
+
+  actor_head = std::make_shared<CategoricalOutput>(hidden_dim, n_actions);
+
+  // 应用Xavier初始化
+  // xavier_init(shared[0]->as<Linear>());
+  // xavier_init(actor[0]->as<Linear>());
+  // xavier_init(actor[2]->as<Linear>());
+  // xavier_init(critic[0]->as<Linear>());
+  // xavier_init(critic[2]->as<Linear>());
+  // xavier_init(critic_head);
+
+  // 注册模块
+  register_module("shared", shared);
+  register_module("actor", actor);
+  register_module("critic", critic);
+  register_module("critic_head", critic_head);
+  register_module("actor_head", actor_head);
+
+  // 初始化CUDA环境
+  cuda_initialize(max_batch_size, obs_dim, hidden_dim, n_actions);
+  
+  // 分配CUDA内存缓冲区
+  cudaMalloc(&cuda_shared_output, max_batch_size * hidden_dim * sizeof(float));
+  cudaMalloc(&cuda_actor_hidden, max_batch_size * hidden_dim * sizeof(float));
+  cudaMalloc(&cuda_critic_hidden, max_batch_size * hidden_dim * sizeof(float));
+  cudaMalloc(&cuda_actor_fc2_output, max_batch_size * hidden_dim * sizeof(float));
+  cudaMalloc(&cuda_critic_fc2_output, max_batch_size * hidden_dim * sizeof(float));
+  cudaMalloc(&cuda_actor_output, max_batch_size * n_actions * sizeof(float));
+  cudaMalloc(&cuda_critic_output, max_batch_size * 1 * sizeof(float));
+
+  train();
+}
+
+std::vector<torch::Tensor> MlpAC::act(torch::Tensor obs) {
+  if (!obs.is_floating_point()) {
+    obs = obs.to(torch::kFloat);
+  }
+  return forward(obs);
+}
+
+std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
+  if (obs.sizes().size() != 2) {
+    throw std::runtime_error("Input tensor must have 2 dimensions");
   }
 
-  std::vector<torch::Tensor> act(torch::Tensor obs) {
-    if (!obs.is_floating_point()) {
-      obs = obs.to(torch::kFloat);
-    }
-    return forward(obs);
+  auto input_obs_dim = obs.size(1);
+  auto batch_size = obs.size(0);
+  assert(input_obs_dim == obs_dim);
+  assert(batch_size <= max_batch_size);
+
+  // 确保输入在GPU上
+  if (obs.device().type() != torch::kCUDA) {
+    obs = obs.to(torch::kCUDA);
   }
 
-  std::vector<torch::Tensor> forward(torch::Tensor obs) {
-    if (obs.sizes().size() != 2) {
-      throw std::runtime_error("Input tensor must have 2 dimensions");
-    }
+  // 获取权重和偏置的GPU指针
+  auto shared_fc_w = shared[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto shared_fc_b = shared[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_fc1_w = actor[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto actor_fc1_b = actor[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_fc2_w = actor[2]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto actor_fc2_b = actor[2]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto critic_fc1_w = critic[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto critic_fc1_b = critic[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto critic_fc2_w = critic[2]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto critic_fc2_b = critic[2]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_head_w = actor_head->get_linear()->weight.data().contiguous().data_ptr<float>();
+  auto actor_head_b = actor_head->get_linear()->bias.data().contiguous().data_ptr<float>();
+  auto critic_head_w = critic_head->weight.data().contiguous().data_ptr<float>();
+  auto critic_head_b = critic_head->bias.data().contiguous().data_ptr<float>();
 
-    auto input_obs_dim = obs.size(1);
-    auto batch_size = obs.size(0);
-    assert(input_obs_dim == obs_dim);
+  // 获取输入的GPU指针
+  auto input = obs.contiguous().data_ptr<float>();
 
-    // 获取权重和偏置
-    // printf("Get weights and biases...\n");
-    auto shared_fc_w = shared[0]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, input_obs_dim})
-                           .data_ptr<float>();
-    auto shared_fc_b =
-        shared[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_fc1_w = actor[0]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, hidden_dim})
-                           .data_ptr<float>();
-    auto actor_fc1_b =
-        actor[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_fc2_w = actor[2]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, hidden_dim})
-                           .data_ptr<float>();
-    auto actor_fc2_b =
-        actor[2]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto critic_fc1_w = critic[0]
-                            ->as<Linear>()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({hidden_dim, hidden_dim})
-                            .data_ptr<float>();
-    auto critic_fc1_b =
-        critic[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto critic_fc2_w = critic[2]
-                            ->as<Linear>()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({hidden_dim, hidden_dim})
-                            .data_ptr<float>();
-    auto critic_fc2_b =
-        critic[2]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_head_w = actor_head->as<CategoricalOutput>()
-                            ->get_linear()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({n_actions, hidden_dim})
-                            .data_ptr<float>();
-    auto actor_head_b = actor_head->as<CategoricalOutput>()
-                            ->get_linear()
-                            ->bias.data()
-                            .cpu()
-                            .contiguous()
-                            .data_ptr<float>();
-    auto critic_head_w = critic_head->weight.data()
-                             .cpu()
-                             .contiguous()
-                             .view({1, hidden_dim})
-                             .data_ptr<float>();
-    auto critic_head_b =
-        critic_head->bias.data().cpu().contiguous().data_ptr<float>();
+  // 调用CUDA前向传播函数（所有计算在GPU上完成）
+  cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
+               shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
+               actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
+               critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
+               critic_head_b, cuda_actor_output, cuda_critic_output,
+               cuda_shared_output, cuda_actor_hidden, cuda_critic_hidden,
+               cuda_actor_fc2_output, cuda_critic_fc2_output);
 
-    auto input = obs.cpu().contiguous().data_ptr<float>();
+  // 更新缓存的中间结果
+  cached_shared_output = torch::from_blob(cuda_shared_output, 
+                                        {batch_size, hidden_dim}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_hidden = torch::from_blob(cuda_actor_hidden, 
+                                        {batch_size, hidden_dim}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_hidden = torch::from_blob(cuda_critic_hidden, 
+                                         {batch_size, hidden_dim}, 
+                                         torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_output = torch::from_blob(cuda_actor_output, 
+                                        {batch_size, n_actions}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_output = torch::from_blob(cuda_critic_output, 
+                                         {batch_size, 1}, 
+                                         torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_fc2_output = torch::from_blob(cuda_actor_fc2_output, 
+                                            {batch_size, hidden_dim}, 
+                                            torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_fc2_output = torch::from_blob(cuda_critic_fc2_output, 
+                                            {batch_size, hidden_dim}, 
+                                            torch::TensorOptions().device(torch::kCUDA));
 
-    // 分配输出内存
-    float *actor_output_data = new float[batch_size * n_actions];
-    float *critic_output_data = new float[batch_size * 1];
+  // 处理Actor输出（策略分布）
+  auto dist = actor_head->forward(cached_actor_output);
+  auto action = dist->sample({});
+  auto actLogProbs = dist->log_prob(action);
 
-    // 调用CUDA前向传播函数
-    // printf("Calling CUDA forward function...\n");
-    cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
-                 shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
-                 actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
-                 critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
-                 critic_head_b, actor_output_data, critic_output_data);
+  return {action.to(torch::kFloat), cached_critic_output, actLogProbs};
+}
 
-    // 将结果转换回PyTorch张量
-    // printf("Converting results to PyTorch tensors...\n");
-    auto actor_output = torch::from_blob(actor_output_data,
-                                         {batch_size, n_actions}, torch::kFloat32)
-                            .to(obs.device());
-    auto critic_output =
-        torch::from_blob(critic_output_data, {batch_size, 1}, torch::kFloat32)
-            .to(obs.device());
-
-    // 处理Actor输出（策略分布）
-    // printf("Processing actor output...\n");
-    auto dist = actor_head->forward(actor_output);
-    auto action = dist->sample({});
-    auto actLogProbs = dist->log_prob(action);
-
-    delete[] actor_output_data;
-    delete[] critic_output_data;
-
-    // 更新缓存
-    cached_obs = obs;
-    auto x = shared->forward(obs);
-    cached_x = x;
-    cached_hidden_actor = actor->forward(x);
-    cached_hidden_critic = critic->forward(x);
-    cached_actor_output = dist->get_probs();
-    cached_value = critic_output;
-
-    // printf("Returning results...\n");
-    return {action.to(torch::kFloat), critic_output, actLogProbs};
-  }
-
-  std::vector<torch::Tensor> evaluate_actions(torch::Tensor obs,
+std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
                                                    torch::Tensor actions) {
-    if (obs.sizes().size() != 2) {
-      throw std::runtime_error("Input tensor must have 2 dimensions");
-    }
-
-    auto input_obs_dim = obs.size(1);
-    auto batch_size = obs.size(0);
-    assert(input_obs_dim == obs_dim);
-
-    // 获取权重和偏置
-    auto shared_fc_w = shared[0]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, input_obs_dim})
-                           .data_ptr<float>();
-    auto shared_fc_b =
-        shared[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_fc1_w = actor[0]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, hidden_dim})
-                           .data_ptr<float>();
-    auto actor_fc1_b =
-        actor[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_fc2_w = actor[2]
-                           ->as<Linear>()
-                           ->weight.data()
-                           .cpu()
-                           .contiguous()
-                           .view({hidden_dim, hidden_dim})
-                           .data_ptr<float>();
-    auto actor_fc2_b =
-        actor[2]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto critic_fc1_w = critic[0]
-                            ->as<Linear>()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({hidden_dim, hidden_dim})
-                            .data_ptr<float>();
-    auto critic_fc1_b =
-        critic[0]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto critic_fc2_w = critic[2]
-                            ->as<Linear>()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({hidden_dim, hidden_dim})
-                            .data_ptr<float>();
-    auto critic_fc2_b =
-        critic[2]->as<Linear>()->bias.data().cpu().contiguous().data_ptr<float>();
-    auto actor_head_w = actor_head->as<CategoricalOutput>()
-                            ->get_linear()
-                            ->weight.data()
-                            .cpu()
-                            .contiguous()
-                            .view({n_actions, hidden_dim})
-                            .data_ptr<float>();
-    auto actor_head_b = actor_head->as<CategoricalOutput>()
-                            ->get_linear()
-                            ->bias.data()
-                            .cpu()
-                            .contiguous()
-                            .data_ptr<float>();
-    auto critic_head_w = critic_head->weight.data()
-                             .cpu()
-                             .contiguous()
-                             .view({1, hidden_dim})
-                             .data_ptr<float>();
-    auto critic_head_b =
-        critic_head->bias.data().cpu().contiguous().data_ptr<float>();
-
-    auto input = obs.cpu().contiguous().data_ptr<float>();
-
-    // 分配输出内存
-    float *actor_output_data = new float[batch_size * n_actions];
-    float *critic_output_data = new float[batch_size * 1];
-
-    // 调用CUDA前向传播函数
-    cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
-                 shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
-                 actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
-                 critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
-                 critic_head_b, actor_output_data, critic_output_data);
-
-    // 将结果转换回PyTorch张量
-    auto actor_output = torch::from_blob(actor_output_data,
-                                         {batch_size, n_actions}, torch::kFloat32)
-                            .to(obs.device());
-    auto critic_output =
-        torch::from_blob(critic_output_data, {batch_size, 1}, torch::kFloat32)
-            .to(obs.device());
-
-    // 处理Actor输出（策略分布）
-    auto dist = actor_head->forward(actor_output);
-    // auto dist = std::make_shared<Categorical>(actor_output);
-    auto actLogProbs = dist->log_prob(actions.squeeze(-1))
-                           .view({actions.size(0), -1})
-                           .sum(-1)
-                           .unsqueeze(-1);
-
-    auto distEntropy = dist->entropy();
-    assert(distEntropy.sizes().size() == 1);
-    distEntropy = distEntropy.unsqueeze(1);
-    auto probs = dist->get_probs();
-
-    delete[] actor_output_data;
-    delete[] critic_output_data;
-
-    // 更新缓存
-    cached_obs = obs;
-    auto x = shared->forward(obs);
-    cached_x = x;
-    cached_hidden_actor = actor->forward(x);
-    cached_hidden_critic = critic->forward(x);
-    cached_actor_output = probs;
-    cached_value = critic_output;
-
-    return {critic_output, actLogProbs, distEntropy, probs};
+  if (obs.sizes().size() != 2) {
+    throw std::runtime_error("Input tensor must have 2 dimensions");
   }
 
-  std::vector<torch::Tensor> get_intermediate_outputs(torch::Tensor obs) {
-    if (obs.sizes().size() != 2) {
-      throw std::runtime_error("Input tensor must have 2 dimensions");
-    }
+  auto input_obs_dim = obs.size(1);
+  auto batch_size = obs.size(0);
+  assert(input_obs_dim == obs_dim);
+  assert(batch_size <= max_batch_size);
 
-    auto input_obs_dim = obs.size(1);
-    // auto batch_size = obs.size(0);
-    assert(input_obs_dim == obs_dim);
-
-    if (obs.equal(cached_obs)) {
-      return {cached_obs, cached_x, cached_hidden_actor, cached_hidden_critic, cached_actor_output, cached_value};
-    } else {
-      // 如果输入不同，重新计算并更新缓存
-      forward(obs);
-      return {cached_obs, cached_x, cached_hidden_actor, cached_hidden_critic, cached_actor_output, cached_value};
-    }
+  // 确保输入在GPU上
+  if (obs.device().type() != torch::kCUDA) {
+    obs = obs.to(torch::kCUDA);
   }
-};
+  if (actions.device().type() != torch::kCUDA) {
+    actions = actions.to(torch::kCUDA);
+  }
 
+  // 获取权重和偏置的GPU指针
+  auto shared_fc_w = shared[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto shared_fc_b = shared[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_fc1_w = actor[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto actor_fc1_b = actor[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_fc2_w = actor[2]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto actor_fc2_b = actor[2]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto critic_fc1_w = critic[0]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto critic_fc1_b = critic[0]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto critic_fc2_w = critic[2]->as<Linear>()->weight.data().contiguous().data_ptr<float>();
+  auto critic_fc2_b = critic[2]->as<Linear>()->bias.data().contiguous().data_ptr<float>();
+  auto actor_head_w = actor_head->get_linear()->weight.data().contiguous().data_ptr<float>();
+  auto actor_head_b = actor_head->get_linear()->bias.data().contiguous().data_ptr<float>();
+  auto critic_head_w = critic_head->weight.data().contiguous().data_ptr<float>();
+  auto critic_head_b = critic_head->bias.data().contiguous().data_ptr<float>();
+
+  // 获取输入的GPU指针
+  auto input = obs.contiguous().data_ptr<float>();
+
+  // 调用CUDA前向传播函数（所有计算在GPU上完成）
+  cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
+               shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
+               actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
+               critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
+               critic_head_b, cuda_actor_output, cuda_critic_output,
+               cuda_shared_output, cuda_actor_hidden, cuda_critic_hidden,
+               cuda_actor_fc2_output, cuda_critic_fc2_output);
+
+  // 更新缓存的中间结果
+  cached_shared_output = torch::from_blob(cuda_shared_output, 
+                                        {batch_size, hidden_dim}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_hidden = torch::from_blob(cuda_actor_hidden, 
+                                        {batch_size, hidden_dim}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_hidden = torch::from_blob(cuda_critic_hidden, 
+                                         {batch_size, hidden_dim}, 
+                                         torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_output = torch::from_blob(cuda_actor_output, 
+                                        {batch_size, n_actions}, 
+                                        torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_output = torch::from_blob(cuda_critic_output, 
+                                         {batch_size, 1}, 
+                                         torch::TensorOptions().device(torch::kCUDA));
+  cached_actor_fc2_output = torch::from_blob(cuda_actor_fc2_output, 
+                                            {batch_size, hidden_dim}, 
+                                            torch::TensorOptions().device(torch::kCUDA));
+  cached_critic_fc2_output = torch::from_blob(cuda_critic_fc2_output, 
+                                            {batch_size, hidden_dim}, 
+                                            torch::TensorOptions().device(torch::kCUDA));
+
+  // 处理Actor输出（策略分布）
+  auto dist = actor_head->forward(cached_actor_output);
+  auto actLogProbs = dist->log_prob(actions.squeeze(-1))
+                         .view({actions.size(0), -1})
+                         .sum(-1)
+                         .unsqueeze(-1);
+
+  auto distEntropy = dist->entropy();
+  assert(distEntropy.sizes().size() == 1);
+  distEntropy = distEntropy.unsqueeze(1);
+  auto probs = dist->get_probs();
+
+  return {cached_critic_output, actLogProbs, distEntropy, probs};
+}
+
+std::vector<float*> MlpAC::get_cuda_gradients() const {
+  // 返回CUDA梯度指针数组，在A2C类中使用
+  return {}; // 实现省略
+}
 } // namespace rl

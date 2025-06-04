@@ -8,28 +8,27 @@
 
 using namespace torch;
 
-namespace rl
-{
-class OutputLayer : public nn::Module
-{
-  public:
-    virtual ~OutputLayer() = 0;
+namespace rl {
+class OutputLayer : public nn::Module {
+public:
+  virtual ~OutputLayer() = 0;
 
-    virtual std::unique_ptr<Distribution> forward(torch::Tensor x) = 0;
+  virtual std::unique_ptr<Distribution> forward(torch::Tensor x) = 0;
+
+  virtual nn::Linear get_linear() = 0;
 };
 
 inline OutputLayer::~OutputLayer() {}
 
-class CategoricalOutput : public OutputLayer
-{
-  private:
-    nn::Linear linear;
+class CategoricalOutput : public OutputLayer {
+private:
+  nn::Linear linear;
 
-  public:
-    CategoricalOutput(unsigned int num_inputs, unsigned int num_outputs);
+public:
+  CategoricalOutput(unsigned int num_inputs, unsigned int num_outputs);
 
-    std::unique_ptr<Distribution> forward(torch::Tensor x);
-    nn::Linear get_linear() { return linear; }
+  std::unique_ptr<Distribution> forward(torch::Tensor x);
+  nn::Linear get_linear() { return linear; }
 };
 
-}
+} // namespace rl
