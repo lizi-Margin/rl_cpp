@@ -1,10 +1,11 @@
 #include "rl/traj.h"
-#include "rl/model/mlp_ac.h"
+#include "rl/model/mlp_ac_cuda.h"
 #include "rl/algorithms/a2c.h"
 #include "draw/csv_drawer.h"
 #include "rubbish_can.h"
 #include <c10/core/ScalarType.h>
 #include <cstdio>
+#include <chrono>
 
 draw::csv_drawer drawer("./train_info.csv");
 
@@ -26,6 +27,8 @@ void simple_game()
     ::rl::A2C trainer(static_cast<std::shared_ptr<::rl::AC_Base>>(ac), 1., 1., 0.1, 1e-3);
     
     auto obs = torch::randint(0, 10, {N_parallel, obs_dim}).to(torch::kFloat);
+
+    auto start_time = std::chrono::high_resolution_clock::now();
 
     for (unsigned int e = 0; e < N_episode; e += 1)
     {
@@ -77,6 +80,11 @@ void simple_game()
         drawer.draw(train_info);
         traj.clear();
     }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count(); 
+
+    std::printf("Training completed in %ld seconds.\n", duration);
 }
 
 

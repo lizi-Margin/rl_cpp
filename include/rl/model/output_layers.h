@@ -29,6 +29,7 @@ class CategoricalOutput : public OutputLayer
     CategoricalOutput(unsigned int num_inputs, unsigned int num_outputs);
 
     std::unique_ptr<Distribution> forward(torch::Tensor x);
+    nn::Linear get_linear() { return linear; }
 };
 
 }

@@ -21,7 +21,7 @@ CategoricalOutput::CategoricalOutput(unsigned int num_inputs,
 
 std::unique_ptr<Distribution> CategoricalOutput::forward(torch::Tensor x)
 {
-    x = linear(x);
+    // x = linear(x);
     return std::make_unique<Categorical>(nullptr, &x);
 }
 

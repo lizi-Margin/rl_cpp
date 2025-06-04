@@ -16,6 +16,7 @@ class A2C
     std::shared_ptr<::rl::AC_Base> actor_and_critic;
     float actor_loss_coef, value_loss_coef, entropy_coef, max_grad_norm, original_learning_rate;
     std::unique_ptr<torch::optim::SGD> optimizer;
+    std::unordered_map<std::string, torch::Tensor> parameter_cache;
 
   public:
     inline A2C(
@@ -40,5 +41,6 @@ class A2C
         ) {}
 
     std::unordered_map<std::string, float> update(Traj &traj);
+    void cache_parameters();
 };
 }
