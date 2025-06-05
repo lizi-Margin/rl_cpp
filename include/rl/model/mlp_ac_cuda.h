@@ -5,8 +5,8 @@
 #include <vector>
 
 // CUDA函数声明
-extern "C" void cuda_initialize(int max_batch_size, int input_dim,
-                                int hidden_dim, int output_dim);
+extern "C" void cuda_init(int max_batch_size, int input_dim, int hidden_dim,
+                          int output_dim);
 extern "C" void cuda_cleanup();
 extern "C" void
 cuda_forward(const float *input, int batch_size, int input_dim, int hidden_dim,
@@ -114,9 +114,6 @@ public:
   // 手动反向传播
   void manual_backward(torch::Tensor grad_actor_output,
                        torch::Tensor grad_critic_output);
-
-  // 拷贝梯度回主机
-  void copy_gradients_to_host();
 
   // 更新参数
   void update_parameters(float learning_rate);

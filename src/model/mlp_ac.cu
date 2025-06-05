@@ -16,6 +16,16 @@
     }                                                                          \
   }
 
+// 添加偏置的内核
+__global__ void add_bias_kernel(float *output, const float *bias, 
+                                int output_dim, int batch_size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < batch_size * output_dim) {
+    int neuron_idx = idx % output_dim;
+    output[idx] += bias[neuron_idx];
+  }
+}
+
 // 使用CUDA流实现分流并行
 __global__ void linear_forward_kernel(const float *__restrict__ input,
                                       const float *__restrict__ weights,
@@ -256,7 +266,6 @@ __global__ void fc1_backward_kernel(const float *__restrict__ input,
                                     int output_dim, int batch_size) {
   extern __shared__ float shared_mem[];
   float *delta_shared = shared_mem;
-  float *grad_accum = &shared_mem[hidden_dim];
 
   int j = blockIdx.x; // hidden_dim维度索引
   int tid = threadIdx.x;
@@ -272,8 +281,10 @@ __global__ void fc1_backward_kernel(const float *__restrict__ input,
   // 计算梯度分量
   float delta1 = 0.0f;
   for (int i = tid; i < output_dim; i += blockDim.x) {
-    delta1 += fc2_weights[i * hidden_dim + j] *
-              grad_output[batch_idx * output_dim + i];
+    if (i < output_dim) {
+      delta1 += fc2_weights[i * hidden_dim + j] *
+                grad_output[batch_idx * output_dim + i];
+    }
   }
   delta1 *= tanh_derivative;
 
@@ -289,42 +300,28 @@ __global__ void fc1_backward_kernel(const float *__restrict__ input,
     __syncthreads();
   }
 
-  float total_delta = delta_shared[0];
-
-  // 初始化权重梯度累加器
-  if (tid < input_dim) {
-    grad_accum[tid] = 0.0f;
-  }
-  __syncthreads();
-
-  // 累加权重梯度
-  if (tid < input_dim) {
-    float partial = input[batch_idx * input_dim + tid] * total_delta;
-    atomicAdd(&grad_accum[tid], partial);
-  }
-
-  __syncthreads();
-
-  // 原子更新全局内存
-  if (tid < input_dim) {
-    atomicAdd(&grad_weights[j * input_dim + tid], grad_accum[tid]);
-  }
-
-  // 更新偏置
   if (tid == 0) {
+    float total_delta = delta_shared[0];
+    
+    // 更新权重梯度
+    for (int k = 0; k < input_dim; k++) {
+      float partial_w = input[batch_idx * input_dim + k] * total_delta;
+      atomicAdd(&grad_weights[j * input_dim + k], partial_w);
+    }
+    
+    // 更新偏置
     atomicAdd(&grad_bias[j], total_delta);
   }
 }
 
 // 共享层反向传播，合并actor和critic的梯度
 __global__ void shared_backward_kernel(
-    const float *__restrict__ input, const float *__restrict__ hidden,
-    const float *__restrict__ grad_actor, const float *__restrict__ grad_critic,
-    float *__restrict__ grad_weights, float *__restrict__ grad_bias,
+    const float *__restrict__ input, 
+    const float *__restrict__ grad_actor, 
+    const float *__restrict__ grad_critic,
+    float *__restrict__ grad_weights, 
+    float *__restrict__ grad_bias,
     int input_dim, int hidden_dim, int batch_size) {
-
-  extern __shared__ float shared_mem[];
-  float *grad_accum = shared_mem;
 
   int j = blockIdx.x; // hidden_dim维度索引
   int tid = threadIdx.x;
@@ -333,30 +330,17 @@ __global__ void shared_backward_kernel(
   if (j >= hidden_dim || batch_idx >= batch_size)
     return;
 
-  // 初始化共享内存
-  if (tid < input_dim) {
-    grad_accum[tid] = 0.0f;
-  }
-  __syncthreads();
-
   // 合并actor和critic的梯度
   float delta = grad_actor[batch_idx * hidden_dim + j] +
                 grad_critic[batch_idx * hidden_dim + j];
 
-  // 累加权重梯度
-  if (tid < input_dim) {
-    float partial = input[batch_idx * input_dim + tid] * delta;
-    atomicAdd(&grad_accum[tid], partial);
+  // 每个线程处理部分输入维度
+  for (int k = tid; k < input_dim; k += blockDim.x) {
+    float partial = input[batch_idx * input_dim + k] * delta;
+    atomicAdd(&grad_weights[j * input_dim + k], partial);
   }
 
-  __syncthreads();
-
-  // 原子更新全局内存
-  if (tid < input_dim) {
-    atomicAdd(&grad_weights[j * input_dim + tid], grad_accum[tid]);
-  }
-
-  // 更新偏置
+  // 更新偏置（每个神经元只由一个线程更新）
   if (tid == 0) {
     atomicAdd(&grad_bias[j], delta);
   }
@@ -490,7 +474,7 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
                   float *actor_hidden, float *actor_fc2_output, 
                   float *critic_hidden,
                   float *critic_fc2_output) { 
-  // 使用内存池中的设备指针
+
   float *d_input = g_mem_pool.d_input;
   float *d_shared_w = g_mem_pool.d_shared_w;
   float *d_shared_b = g_mem_pool.d_shared_b;
@@ -568,7 +552,7 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
                              critic_stream));
 
   // 执行共享层前向传播
-  dim3 block0(hidden_dim, batch_size);
+  dim3 block0((hidden_dim + TILE_SIZE - 1) / TILE_SIZE, batch_size);
   int shared_mem_size = TILE_SIZE * (TILE_SIZE + 1) * sizeof(float);
   linear_forward_kernel<<<block0, TILE_SIZE, shared_mem_size, actor_stream>>>(
       d_input, d_shared_w, d_shared_b, d_shared_output, input_dim, hidden_dim,
@@ -582,10 +566,10 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
   CHECK_CUDA(cudaStreamWaitEvent(critic_stream, shared_done, 0));
 
   // Actor路径
-  fc1_forward_kernel<<<dim3(hidden_dim, batch_size), TILE_SIZE, shared_mem_size,
-                       actor_stream>>>(d_shared_output, d_actor_fc1_w,
-                                       d_actor_fc1_b, d_actor_hidden,
-                                       hidden_dim, hidden_dim, batch_size);
+  dim3 block_a1((hidden_dim + TILE_SIZE - 1) / TILE_SIZE, batch_size);
+  fc1_forward_kernel<<<block_a1, TILE_SIZE, shared_mem_size, actor_stream>>>(
+      d_shared_output, d_actor_fc1_w, d_actor_fc1_b, d_actor_hidden,
+      hidden_dim, hidden_dim, batch_size);
 
   // 使用cuBLAS优化全连接层
   float alpha = 1.0f;
@@ -595,26 +579,32 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
               d_actor_hidden, hidden_dim, &beta, d_actor_fc2_output,
               output_dim);
 
+  // 添加偏置
+  dim3 bias_block(256);
+  dim3 bias_grid((batch_size * output_dim + bias_block.x - 1) / bias_block.x);
+  add_bias_kernel<<<bias_grid, bias_block, 0, actor_stream>>>(
+      d_actor_fc2_output, d_actor_fc2_b, output_dim, batch_size);
+  
   // Actor Head层
-  linear_forward_kernel<<<dim3(output_dim, batch_size), TILE_SIZE,
-                          shared_mem_size, actor_stream>>>(
+  dim3 block_actor_head((output_dim + TILE_SIZE - 1) / TILE_SIZE, batch_size);
+  linear_forward_kernel<<<block_actor_head, TILE_SIZE, shared_mem_size, actor_stream>>>(
       d_actor_fc2_output, d_actor_head_w, d_actor_head_b, d_actor_output,
       output_dim, output_dim, batch_size);
 
   // Critic路径
-  fc1_forward_kernel<<<dim3(hidden_dim, batch_size), TILE_SIZE, shared_mem_size,
-                       critic_stream>>>(d_shared_output, d_critic_fc1_w,
-                                        d_critic_fc1_b, d_critic_hidden,
-                                        hidden_dim, hidden_dim, batch_size);
+  dim3 block_c1((hidden_dim + TILE_SIZE - 1) / TILE_SIZE, batch_size);
+  fc1_forward_kernel<<<block_c1, TILE_SIZE, shared_mem_size, critic_stream>>>(
+      d_shared_output, d_critic_fc1_w, d_critic_fc1_b, d_critic_hidden,
+      hidden_dim, hidden_dim, batch_size);
 
-  fc2_forward_kernel<<<dim3((batch_size * output_dim + 255) / 256), 256, 0,
-                       critic_stream>>>(d_critic_hidden, d_critic_fc2_w,
-                                        d_critic_fc2_b, d_critic_fc2_output,
-                                        hidden_dim, output_dim, batch_size);
+  dim3 block_c2((batch_size * output_dim + 255) / 256);
+  fc2_forward_kernel<<<block_c2, 256, 0, critic_stream>>>(
+      d_critic_hidden, d_critic_fc2_w, d_critic_fc2_b, d_critic_fc2_output,
+      hidden_dim, output_dim, batch_size);
 
   // Critic Head层
-  linear_forward_kernel<<<dim3(output_dim, batch_size), TILE_SIZE,
-                          shared_mem_size, critic_stream>>>(
+  dim3 block_critic_head((output_dim + TILE_SIZE - 1) / TILE_SIZE, batch_size);
+  linear_forward_kernel<<<block_critic_head, TILE_SIZE, shared_mem_size, critic_stream>>>(
       d_critic_fc2_output, d_critic_head_w, d_critic_head_b, d_critic_output,
       output_dim, output_dim, batch_size);
 
@@ -801,11 +791,13 @@ void cuda_backward(const float *input, const float *shared_output,
   dim3 head_grid((batch_size * output_dim + head_block.x - 1) / head_block.x);
 
   // 计算Actor Head层梯度
-  linear_backward_kernel<<<dim3(output_dim, batch_size), TILE_SIZE,
-                           TILE_SIZE *(TILE_SIZE + 1) * sizeof(float),
+  dim3 head_grid_dim(output_dim, batch_size);
+  linear_backward_kernel<<<head_grid_dim, TILE_SIZE,
+                           TILE_SIZE * (TILE_SIZE + 1) * sizeof(float),
                            actor_stream>>>(
-      d_actor_fc2_output, d_grad_actor_output, d_grad_actor_head_w,
-      d_grad_actor_head_b, output_dim, output_dim, batch_size);
+      d_actor_fc2_output, d_grad_actor_output,
+      d_grad_actor_head_w, d_grad_actor_head_b, output_dim, output_dim,
+      batch_size);
 
   // 记录事件
   CHECK_CUDA(cudaEventRecord(actor_head_done, actor_stream));
@@ -822,11 +814,12 @@ void cuda_backward(const float *input, const float *shared_output,
   dim3 fc2_grid((batch_size * output_dim + fc2_block.x - 1) / fc2_block.x);
 
   // 计算Critic Head层梯度
-  linear_backward_kernel<<<dim3(output_dim, batch_size), TILE_SIZE,
-                           TILE_SIZE *(TILE_SIZE + 1) * sizeof(float),
+  linear_backward_kernel<<<head_grid_dim, TILE_SIZE,
+                           TILE_SIZE * (TILE_SIZE + 1) * sizeof(float),
                            critic_stream>>>(
-      d_critic_fc2_output, d_grad_critic_output, d_grad_critic_head_w,
-      d_grad_critic_head_b, output_dim, output_dim, batch_size);
+      d_critic_fc2_output, d_grad_critic_output,
+      d_grad_critic_head_w, d_grad_critic_head_b, output_dim, output_dim,
+      batch_size);
 
   // 记录事件
   CHECK_CUDA(cudaEventRecord(critic_head_done, critic_stream));
@@ -843,15 +836,15 @@ void cuda_backward(const float *input, const float *shared_output,
 
   // Actor FC1层反向传播
   dim3 fc1_grid(hidden_dim, batch_size);
-  fc1_backward_kernel<<<fc1_grid, 256, (hidden_dim + input_dim) * sizeof(float),
-                        actor_stream>>>(
+  // 使用固定大小的共享内存（256个元素）
+  size_t fc1_shared_mem = 256 * sizeof(float);
+  fc1_backward_kernel<<<fc1_grid, 256, fc1_shared_mem, actor_stream>>>(
       d_shared_output, d_actor_hidden, d_grad_actor_output, d_actor_fc2_w,
       d_grad_actor_fc1_w, d_grad_actor_fc1_b, hidden_dim, hidden_dim,
       output_dim, batch_size);
 
   // Critic FC1层反向传播
-  fc1_backward_kernel<<<fc1_grid, 256, (hidden_dim + input_dim) * sizeof(float),
-                        critic_stream>>>(
+  fc1_backward_kernel<<<fc1_grid, 256, fc1_shared_mem, critic_stream>>>(
       d_shared_output, d_critic_hidden, d_grad_critic_output, d_critic_fc2_w,
       d_grad_critic_fc1_w, d_grad_critic_fc1_b, hidden_dim, hidden_dim,
       output_dim, batch_size);
@@ -859,11 +852,15 @@ void cuda_backward(const float *input, const float *shared_output,
   // 等待两个流完成
   CHECK_CUDA(cudaStreamSynchronize(actor_stream));
   CHECK_CUDA(cudaStreamSynchronize(critic_stream));
+  
   // 共享层反向传播
-  shared_backward_kernel<<<fc1_grid, 256, input_dim * sizeof(float),
-                           actor_stream>>>(
-      d_input, d_shared_output, d_grad_actor_hidden, d_grad_critic_hidden,
-      d_grad_shared_w, d_grad_shared_b, input_dim, hidden_dim, batch_size);
+  shared_backward_kernel<<<fc1_grid, 256, 0, actor_stream>>>(
+      d_input, 
+      d_grad_actor_hidden, 
+      d_grad_critic_hidden,
+      d_grad_shared_w, 
+      d_grad_shared_b, 
+      input_dim, hidden_dim, batch_size);
 
   // 等待共享层梯度计算完成
   CHECK_CUDA(cudaStreamSynchronize(actor_stream));

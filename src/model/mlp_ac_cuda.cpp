@@ -10,9 +10,8 @@ using namespace torch::nn;
 
 namespace rl {
 
-// Xavier初始化函数
-void xavier_init(Linear linear) {
-  float gain = 1.0f; // 对于tanh激活函数
+void xavier_init(torch::nn::LinearImpl* linear) {
+  float gain = 1.0f;
   float fan_in = linear->weight.size(1);
   float fan_out = linear->weight.size(0);
   float std = gain * std::sqrt(2.0f / (fan_in + fan_out));
@@ -93,12 +92,12 @@ MlpAC::MlpAC(unsigned int obs_dim, unsigned int n_actions,
   actor_head = std::make_shared<CategoricalOutput>(hidden_dim, n_actions);
 
   // 应用Xavier初始化
-  // xavier_init(shared[0]->as<Linear>());
-  // xavier_init(actor[0]->as<Linear>());
-  // xavier_init(actor[2]->as<Linear>());
-  // xavier_init(critic[0]->as<Linear>());
-  // xavier_init(critic[2]->as<Linear>());
-  // xavier_init(critic_head);
+  xavier_init(shared[0]->as<Linear>());
+  xavier_init(actor[0]->as<Linear>());
+  xavier_init(actor[2]->as<Linear>());
+  xavier_init(critic[0]->as<Linear>());
+  xavier_init(critic[2]->as<Linear>());
+  xavier_init(critic_head.get());
 
   // 注册模块
   register_module("shared", shared);
@@ -108,7 +107,7 @@ MlpAC::MlpAC(unsigned int obs_dim, unsigned int n_actions,
   register_module("actor_head", actor_head);
 
   // 初始化CUDA环境
-  cuda_initialize(max_batch_size, obs_dim, hidden_dim, n_actions);
+  cuda_init(max_batch_size, obs_dim, hidden_dim, n_actions);
 
   train();
 }
@@ -284,35 +283,31 @@ void MlpAC::manual_backward(torch::Tensor grad_actor_output,
 }
 
 void MlpAC::update_parameters(float learning_rate) {
+  // 定义一个lambda用于更新参数
+  auto update = [learning_rate](torch::Tensor param, float* grad_ptr) {
+    auto grad_tensor = torch::from_blob(grad_ptr, param.sizes(), param.options());
+    param -= learning_rate * grad_tensor;
+  };
+
   // 共享层
-  shared[0]->as<nn::Linear>()->weight.data() -=
-      learning_rate * (*grad_shared_w);
-  shared[0]->as<nn::Linear>()->bias.data() -= learning_rate * (*grad_shared_b);
+  update(shared[0]->as<nn::Linear>()->weight.data(), grad_shared_w);
+  update(shared[0]->as<nn::Linear>()->bias.data(), grad_shared_b);
 
   // 策略网络
-  actor[0]->as<nn::Linear>()->weight.data() -=
-      learning_rate * (*grad_actor_fc1_w);
-  actor[0]->as<nn::Linear>()->bias.data() -=
-      learning_rate * (*grad_actor_fc1_b);
-  actor[2]->as<nn::Linear>()->weight.data() -=
-      learning_rate * (*grad_actor_fc2_w);
-  actor[2]->as<nn::Linear>()->bias.data() -=
-      learning_rate * (*grad_actor_fc2_b);
-  actor_head->get_linear()->weight.data() -=
-      learning_rate * (*grad_actor_head_w);
-  actor_head->get_linear()->bias.data() -= learning_rate * (*grad_actor_head_b);
+  update(actor[0]->as<nn::Linear>()->weight.data(), grad_actor_fc1_w);
+  update(actor[0]->as<nn::Linear>()->bias.data(), grad_actor_fc1_b);
+  update(actor[2]->as<nn::Linear>()->weight.data(), grad_actor_fc2_w);
+  update(actor[2]->as<nn::Linear>()->bias.data(), grad_actor_fc2_b);
+  update(actor_head->get_linear()->weight.data(), grad_actor_head_w);
+  update(actor_head->get_linear()->bias.data(), grad_actor_head_b);
 
   // 价值网络
-  critic[0]->as<nn::Linear>()->weight.data() -=
-      learning_rate * (*grad_critic_fc1_w);
-  critic[0]->as<nn::Linear>()->bias.data() -=
-      learning_rate * (*grad_critic_fc1_b);
-  critic[2]->as<nn::Linear>()->weight.data() -=
-      learning_rate * (*grad_critic_fc2_w);
-  critic[2]->as<nn::Linear>()->bias.data() -=
-      learning_rate * (*grad_critic_fc2_b);
-  critic_head->weight.data() -= learning_rate * (*grad_critic_head_w);
-  critic_head->bias.data() -= learning_rate * (*grad_critic_head_b);
+  update(critic[0]->as<nn::Linear>()->weight.data(), grad_critic_fc1_w);
+  update(critic[0]->as<nn::Linear>()->bias.data(), grad_critic_fc1_b);
+  update(critic[2]->as<nn::Linear>()->weight.data(), grad_critic_fc2_w);
+  update(critic[2]->as<nn::Linear>()->bias.data(), grad_critic_fc2_b);
+  update(critic_head->weight.data(), grad_critic_head_w);
+  update(critic_head->bias.data(), grad_critic_head_b);
 }
 
 void MlpAC::update_parameters_with_cuda_gradients(float learning_rate) {
@@ -321,9 +316,6 @@ void MlpAC::update_parameters_with_cuda_gradients(float learning_rate) {
   auto grad_actor_output = intermediate_outputs[4].contiguous();
   auto grad_critic_output = intermediate_outputs[5].contiguous();
   manual_backward(grad_actor_output, grad_critic_output);
-
-  // 拷贝梯度回主机
-  copy_gradients_to_host();
 
   // 更新参数
   update_parameters(learning_rate);

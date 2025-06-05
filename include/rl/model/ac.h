@@ -17,7 +17,6 @@ class AC_Base : public torch::nn::Module
     virtual std::vector<torch::Tensor> forward(torch::Tensor obs) = 0;
     virtual std::vector<torch::Tensor> act(torch::Tensor obs) = 0;
     virtual std::vector<torch::Tensor> evaluate_actions(torch::Tensor obs, torch::Tensor actions) = 0;
-    virtual std::vector<torch::Tensor> get_intermediate_outputs() = 0;
     virtual unsigned int get_n_actions() const { return n_actions; }
 };
 
