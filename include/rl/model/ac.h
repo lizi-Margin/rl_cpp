@@ -17,7 +17,10 @@ class AC_Base : public torch::nn::Module
     virtual std::vector<torch::Tensor> forward(torch::Tensor obs) = 0;
     virtual std::vector<torch::Tensor> act(torch::Tensor obs) = 0;
     virtual std::vector<torch::Tensor> evaluate_actions(torch::Tensor obs, torch::Tensor actions) = 0;
-    virtual std::vector<torch::Tensor> get_intermediate_outputs(torch::Tensor obs) = 0;
+
+    auto get_obs_dim() const { return obs_dim; }
+    auto get_n_actions() const { return n_actions; }
+    auto get_hidden_dim() const { return 0; } // Default implementation, can be overridden
 };
 
 }

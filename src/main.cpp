@@ -24,7 +24,7 @@ void simple_game()
 
     auto ac = std::make_shared<::rl::MlpAC>(obs_dim, n_actions, hidden_dim);
     ::rl::Traj traj(episode_steps);
-    ::rl::A2C trainer(static_cast<std::shared_ptr<::rl::AC_Base>>(ac), 1., 1., 0.1, 1e-3);
+    ::rl::A2C trainer(static_cast<std::shared_ptr<::rl::MlpAC>>(ac), 1., 1., 0.1, 1e-3);
     
     auto obs = torch::randint(0, 10, {N_parallel, obs_dim}).to(torch::kFloat);
 
@@ -77,7 +77,7 @@ void simple_game()
         auto train_info = trainer.update(traj);
         std::printf("Episode %d finished, Train info:\n", e);
         print_unordered_map(train_info);
-        drawer.draw(train_info);
+        // drawer.draw(train_info);
         traj.clear();
     }
 
