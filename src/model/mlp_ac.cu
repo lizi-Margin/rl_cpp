@@ -279,6 +279,7 @@ __global__ void optimized_shared_backward_kernel(
   }
 }
 
+extern "C" {
 // 中间结果结构体
 struct IntermediateData {
   float *d_shared_output;
@@ -320,7 +321,6 @@ void cuda_free_mem(IntermediateData *data) {
 }
 
 // 优化后的前向传播
-extern "C" {
 void cuda_forward(const float *input, int batch_size, int input_dim,
                   int hidden_dim, int output_dim, const float *shared_w,
                   const float *shared_b, const float *actor_fc1_w,
@@ -501,7 +501,8 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
   CHECK_CUDA(cudaStreamDestroy(critic_stream));
 }
 
-__global__ void merge_gradients_kernel(float *out, const float *a, const float *b, int n) {
+__global__ void merge_gradients_kernel(float *out, const float *a,
+                                       const float *b, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) {
     out[idx] = a[idx] + b[idx];
@@ -739,21 +740,14 @@ void cuda_backward(const float *input, IntermediateData *fwd_data,
   CHECK_CUDA(cudaStreamSynchronize(actor_stream));
   CHECK_CUDA(cudaStreamSynchronize(critic_stream));
 
-
   printf("Actor and Critic backward pass completed.\n");
   dim3 mergeBlock(256);
   dim3 mergeGrid(CEIL_DIV(batch_size * hidden_dim, mergeBlock.x));
-  merge_gradients_kernel<<<mergeGrid, mergeBlock, 0, actor_stream>>>(
-      d_grad_shared_output, 
-      d_grad_actor_hidden, 
-      d_grad_critic_hidden, 
-      batch_size * hidden_dim
-  );
-  CHECK_CUDA(cudaStreamSynchronize(actor_stream));
-  // 合并共享层的梯度
-  // for (int i = 0; i < batch_size * hidden_dim; i++) {
-  //   d_grad_shared_output[i] = d_grad_actor_hidden[i] + d_grad_critic_hidden[i];
-  // }
+  merge_gradients_kernel<<<mergeGrid, mergeBlock, 0>>>(
+      d_grad_shared_output, d_grad_actor_hidden, d_grad_critic_hidden,
+      batch_size * hidden_dim);
+  CHECK_CUDA(cudaDeviceSynchronize());
+
   printf("Shared layer gradients computed.\n");
 
   // 执行共享层的反向传播

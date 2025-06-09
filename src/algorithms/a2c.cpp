@@ -28,6 +28,8 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
     throw std::runtime_error("Returns tensor is undefined");
   }
 
+  printf("Calculating loss...\n");
+
   auto reward = traj.get_rewards();
   auto reward_dim = reward.size(-1);
   assert(reward_dim == 1);
@@ -38,6 +40,10 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
 
   auto obs = traj.get_observations();
   auto action = traj.get_actions();
+
+  std::cout << "obs: " << obs << std::endl;
+  std::cout << "action: " << action << std::endl;
+
   auto v_logp_e_p = actor_and_critic->evaluate_actions(obs, action);
 
   for (size_t i = 0; i < v_logp_e_p.size(); ++i) {
@@ -46,6 +52,8 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
                                " from evaluate_actions is undefined");
     }
   }
+
+  printf("Calculating loss...\n");
 
   auto distEntropy = v_logp_e_p[2].view({1, num_steps, 1});
   auto values = v_logp_e_p[0].view({1, num_steps, 1});
@@ -111,34 +119,34 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
   auto critic_head_b =
       mlp_ac->get_critic_head_b().cpu().contiguous().data_ptr<float>();
 
-  // 分配梯度内存
-  printf("Allocating gradient memory...\n");
-  grad_shared_w = new float[hidden_dim * input_dim];
-  grad_shared_b = new float[hidden_dim];
-  grad_actor_fc1_w = new float[hidden_dim * hidden_dim];
-  grad_actor_fc1_b = new float[hidden_dim];
-  grad_actor_fc2_w = new float[output_dim * hidden_dim];
-  grad_actor_fc2_b = new float[output_dim];
-  grad_actor_head_w = new float[output_dim * output_dim];
-  grad_actor_head_b = new float[output_dim];
-  grad_critic_fc1_w = new float[hidden_dim * hidden_dim];
-  grad_critic_fc1_b = new float[hidden_dim];
-  grad_critic_fc2_w = new float[output_dim * hidden_dim];
-  grad_critic_fc2_b = new float[output_dim];
-  grad_critic_head_w = new float[output_dim * output_dim];
-  grad_critic_head_b = new float[output_dim];
+  // 分配梯度内存，使用智能指针
+  auto grad_shared_w = std::make_unique<float[]>(hidden_dim * input_dim);
+  auto grad_shared_b = std::make_unique<float[]>(hidden_dim);
+  auto grad_actor_fc1_w = std::make_unique<float[]>(hidden_dim * hidden_dim);
+  auto grad_actor_fc1_b = std::make_unique<float[]>(hidden_dim);
+  auto grad_actor_fc2_w = std::make_unique<float[]>(output_dim * hidden_dim);
+  auto grad_actor_fc2_b = std::make_unique<float[]>(output_dim);
+  auto grad_actor_head_w = std::make_unique<float[]>(output_dim * output_dim);
+  auto grad_actor_head_b = std::make_unique<float[]>(output_dim);
+  auto grad_critic_fc1_w = std::make_unique<float[]>(hidden_dim * hidden_dim);
+  auto grad_critic_fc1_b = std::make_unique<float[]>(hidden_dim);
+  auto grad_critic_fc2_w = std::make_unique<float[]>(output_dim * hidden_dim);
+  auto grad_critic_fc2_b = std::make_unique<float[]>(output_dim);
+  auto grad_critic_head_w = std::make_unique<float[]>(output_dim * output_dim);
+  auto grad_critic_head_b = std::make_unique<float[]>(output_dim);
 
   // 调用CUDA反向传播函数
   printf("Calling CUDA backward function...\n");
-  cuda_backward(obs.cpu().contiguous().data_ptr<float>(),
-                actor_and_critic->get_intermediates(), grad_actor_output,
-                grad_critic_output, batch_size, input_dim, hidden_dim,
-                output_dim, actor_fc2_w, critic_fc2_w, actor_head_w,
-                critic_head_w, grad_shared_w, grad_shared_b, grad_actor_fc1_w,
-                grad_actor_fc1_b, grad_actor_fc2_w, grad_actor_fc2_b,
-                grad_actor_head_w, grad_actor_head_b, grad_critic_fc1_w,
-                grad_critic_fc1_b, grad_critic_fc2_w, grad_critic_fc2_b,
-                grad_critic_head_w, grad_critic_head_b);
+  cuda_backward(
+      obs.cpu().contiguous().data_ptr<float>(),
+      actor_and_critic->get_intermediates(), grad_actor_output,
+      grad_critic_output, batch_size, input_dim, hidden_dim, output_dim,
+      actor_fc2_w, critic_fc2_w, actor_head_w, critic_head_w,
+      grad_shared_w.get(), grad_shared_b.get(), grad_actor_fc1_w.get(),
+      grad_actor_fc1_b.get(), grad_actor_fc2_w.get(), grad_actor_fc2_b.get(),
+      grad_actor_head_w.get(), grad_actor_head_b.get(), grad_critic_fc1_w.get(),
+      grad_critic_fc1_b.get(), grad_critic_fc2_w.get(), grad_critic_fc2_b.get(),
+      grad_critic_head_w.get(), grad_critic_head_b.get());
 
   // 更新参数
   printf("Updating parameters...\n");
@@ -148,36 +156,21 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
     }
   };
 
-  update_param(shared_fc_w, grad_shared_w, hidden_dim * input_dim);
-  update_param(shared_fc_b, grad_shared_b, hidden_dim);
-  update_param(actor_fc1_w, grad_actor_fc1_w, hidden_dim * hidden_dim);
-  update_param(actor_fc1_b, grad_actor_fc1_b, hidden_dim);
-  update_param(actor_fc2_w, grad_actor_fc2_w, output_dim * hidden_dim);
-  update_param(actor_fc2_b, grad_actor_fc2_b, output_dim);
-  update_param(actor_head_w, grad_actor_head_w, output_dim * output_dim);
-  update_param(actor_head_b, grad_actor_head_b, output_dim);
-  update_param(critic_fc1_w, grad_critic_fc1_w, hidden_dim * hidden_dim);
-  update_param(critic_fc1_b, grad_critic_fc1_b, hidden_dim);
-  update_param(critic_fc2_w, grad_critic_fc2_w, output_dim * hidden_dim);
-  update_param(critic_fc2_b, grad_critic_fc2_b, output_dim);
-  update_param(critic_head_w, grad_critic_head_w, output_dim * output_dim);
-  update_param(critic_head_b, grad_critic_head_b, output_dim);
-
-  // 释放梯度内存 do not delete ahead of time
-//   delete[] grad_shared_w;
-//   delete[] grad_shared_b;
-//   delete[] grad_actor_fc1_w;
-//   delete[] grad_actor_fc1_b;
-//   delete[] grad_actor_fc2_w;
-//   delete[] grad_actor_fc2_b;
-//   delete[] grad_actor_head_w;
-//   delete[] grad_actor_head_b;
-//   delete[] grad_critic_fc1_w;
-//   delete[] grad_critic_fc1_b;
-//   delete[] grad_critic_fc2_w;
-//   delete[] grad_critic_fc2_b;
-//   delete[] grad_critic_head_w;
-//   delete[] grad_critic_head_b;
+  update_param(shared_fc_w, grad_shared_w.get(), hidden_dim * input_dim);
+  update_param(shared_fc_b, grad_shared_b.get(), hidden_dim);
+  update_param(actor_fc1_w, grad_actor_fc1_w.get(), hidden_dim * hidden_dim);
+  update_param(actor_fc1_b, grad_actor_fc1_b.get(), hidden_dim);
+  update_param(actor_fc2_w, grad_actor_fc2_w.get(), output_dim * hidden_dim);
+  update_param(actor_fc2_b, grad_actor_fc2_b.get(), output_dim);
+  update_param(actor_head_w, grad_actor_head_w.get(), output_dim * output_dim);
+  update_param(actor_head_b, grad_actor_head_b.get(), output_dim);
+  update_param(critic_fc1_w, grad_critic_fc1_w.get(), hidden_dim * hidden_dim);
+  update_param(critic_fc1_b, grad_critic_fc1_b.get(), hidden_dim);
+  update_param(critic_fc2_w, grad_critic_fc2_w.get(), output_dim * hidden_dim);
+  update_param(critic_fc2_b, grad_critic_fc2_b.get(), output_dim);
+  update_param(critic_head_w, grad_critic_head_w.get(),
+               output_dim * output_dim);
+  update_param(critic_head_b, grad_critic_head_b.get(), output_dim);
 
   return {{"Value loss", value_loss.item().toFloat()},
           {"Action loss", action_loss.item().toFloat()},

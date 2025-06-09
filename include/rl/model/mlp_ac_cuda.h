@@ -44,6 +44,7 @@ void cuda_backward(const float *input, IntermediateData *fwd_data,
 
 void cuda_alloc_mem(IntermediateData *data, int batch_size, int input_dim,
                     int hidden_dim, int output_dim);
+
 void cuda_free_mem(IntermediateData *data);
 }
 

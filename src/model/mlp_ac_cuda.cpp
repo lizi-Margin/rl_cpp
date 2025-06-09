@@ -7,6 +7,8 @@
 
 using namespace torch::nn;
 
+void cuda_free_mem(IntermediateData *data);
+
 namespace rl {
 
 // Xavier初始化函数
@@ -45,13 +47,13 @@ MlpAC::MlpAC(unsigned int obs_dim, unsigned int n_actions,
   xavier_init(critic_head->as<Linear>());
 
   // 注册模块
-  register_module("shared", shared);
-  register_module("actor", actor);
-  register_module("critic", critic);
-  register_module("critic_head", critic_head);
-  register_module("actor_head", actor_head);
+  // register_module("shared", shared);
+  // register_module("actor", actor);
+  // register_module("critic", critic);
+  // register_module("critic_head", critic_head);
+  // register_module("actor_head", actor_head);
 
-  train();
+  // train();
 }
 
 std::vector<torch::Tensor> MlpAC::act(torch::Tensor obs) {
@@ -141,37 +143,34 @@ std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
   auto input = obs.cpu().contiguous().data_ptr<float>();
 
   // 分配输出内存
-  float *actor_output_data = new float[batch_size * n_actions];
-  float *critic_output_data = new float[batch_size * 1];
+  // ...existing code...
+
+  auto actor_output_tensor =
+      torch::empty({batch_size, n_actions}, torch::kFloat32);
+  auto actor_output_data = actor_output_tensor.data_ptr<float>();
+  auto critic_output_data = std::make_unique<float[]>(batch_size * 1);
 
   // 调用CUDA前向传播函数
-  // printf("Calling CUDA forward function...\n");
   cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
                shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
                actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
                critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
-               critic_head_b, actor_output_data, critic_output_data,
+               critic_head_b, actor_output_data, critic_output_data.get(),
                &intermediates);
 
   // 将结果转换回PyTorch张量
-  // printf("Converting results to PyTorch tensors...\n");
-  auto actor_output = torch::from_blob(actor_output_data,
-                                       {batch_size, n_actions}, torch::kFloat32)
-                          .to(obs.device());
-  auto critic_output =
-      torch::from_blob(critic_output_data, {batch_size, 1}, torch::kFloat32)
-          .to(obs.device());
+  auto actor_output = actor_output_tensor.to(obs.device());
+  auto critic_output = torch::from_blob(critic_output_data.get(),
+                                        {batch_size, 1}, torch::kFloat32)
+                           .clone()
+                           .to(obs.device()); // clone确保数据安全
 
   // 处理Actor输出（策略分布）
-  // printf("Processing actor output...\n");
   auto dist = actor_head->forward(actor_output);
   auto action = dist->sample({});
   auto actLogProbs = dist->log_prob(action);
 
-  // delete[] actor_output_data;
-  // delete[] critic_output_data;
-
-  // printf("Returning results...\n");
+  // 不需要手动delete，智能指针会自动释放
   return {action.to(torch::kFloat), critic_output, actLogProbs};
 }
 
@@ -244,6 +243,7 @@ std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
                           .cpu()
                           .contiguous()
                           .data_ptr<float>();
+
   auto critic_head_w = critic_head->weight.data()
                            .cpu()
                            .contiguous()
@@ -254,41 +254,52 @@ std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
 
   auto input = obs.cpu().contiguous().data_ptr<float>();
 
-  // 分配输出内存
-  float *actor_output_data = new float[batch_size * n_actions];
-  float *critic_output_data = new float[batch_size * 1];
+  // 分配输出内存，使用智能指针
+  auto actor_output_data = std::make_unique<float[]>(batch_size * n_actions);
+  auto critic_output_data = std::make_unique<float[]>(batch_size * 1);
+
+  // printf("Allocating memory for actor and critic outputs...\n");
+
+  // printf("Calling CUDA forward function...\n");
 
   // 调用CUDA前向传播函数
   cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
                shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
                actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
                critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
-               critic_head_b, actor_output_data, critic_output_data,
+               critic_head_b, actor_output_data.get(), critic_output_data.get(),
                &intermediates);
 
   // 将结果转换回PyTorch张量
-  auto actor_output = torch::from_blob(actor_output_data,
+  auto actor_output = torch::from_blob(actor_output_data.get(),
                                        {batch_size, n_actions}, torch::kFloat32)
                           .to(obs.device());
-  auto critic_output =
-      torch::from_blob(critic_output_data, {batch_size, 1}, torch::kFloat32)
-          .to(obs.device());
+
+  // std::cout << "actor output: " << actor_output << std::endl;
+
+  auto critic_output = torch::from_blob(critic_output_data.get(),
+                                        {batch_size, 1}, torch::kFloat32)
+                           .to(obs.device());
+
+  // std::cout << "critic output: " << critic_output << std::endl;
 
   // 处理Actor输出（策略分布）
   auto dist = actor_head->forward(actor_output);
   // auto dist = std::make_shared<Categorical>(actor_output);
+
+  // std::cout << "dist: " << dist->get_probs() << std::endl;
+
   auto actLogProbs = dist->log_prob(actions.squeeze(-1))
                          .view({actions.size(0), -1})
                          .sum(-1)
                          .unsqueeze(-1);
 
+  // std::cout << "actLogProbs: " << actLogProbs << std::endl;
+
   auto distEntropy = dist->entropy();
   assert(distEntropy.sizes().size() == 1);
   distEntropy = distEntropy.unsqueeze(1);
   auto probs = dist->get_probs();
-
-  // delete[] actor_output_data;
-  // delete[] critic_output_data;
 
   return {critic_output, actLogProbs, distEntropy, probs};
 }

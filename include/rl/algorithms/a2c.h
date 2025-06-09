@@ -4,7 +4,6 @@
 #include <torch/torch.h>
 #include <unordered_map>
 
-#include "rl/model/ac.h"
 #include "rl/model/mlp_ac_cuda.h"
 #include "rl/traj.h"
 

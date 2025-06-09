@@ -32,9 +32,10 @@ void simple_game()
 
     for (unsigned int e = 0; e < N_episode; e += 1)
     {
+        std::printf("Episode %d begins:\n", e);
         for (unsigned int step = 0; step < episode_steps; step += 1)
         {
-            std::printf("\rEpisode %d, Step %d", e, step);
+            std::printf("Episode %d, Step %d\n", e, step);
             std::vector<torch::Tensor> a_v_logp;
             {
                 torch::NoGradGuard no_grad;
@@ -47,12 +48,12 @@ void simple_game()
             auto done = e == episode_steps - 1 ? \
                 torch::ones({N_parallel, 1}) : torch::zeros({N_parallel, 1});
             
-            // std::cout << "Obs: " << obs << std::endl;
-            // std::cout << "Action: " << action << std::endl;
-            // std::cout << "Value: " << value.sizes() << std::endl;
-            // std::cout << "actLogProbs: " << actLogProbs.sizes() << std::endl;
-            // std::cout << "Reward: " << reward << std::endl;
-            // std::cout << "Done: " << done.sizes() << std::endl;
+            std::cout << "Obs: " << obs << std::endl;
+            std::cout << "Action: " << action << std::endl;
+            std::cout << "Value: " << value.sizes() << std::endl;
+            std::cout << "actLogProbs: " << actLogProbs.sizes() << std::endl;
+            std::cout << "Reward: " << reward << std::endl;
+            std::cout << "Done: " << done.sizes() << std::endl;
 
             traj.remember(
                 obs[0],
@@ -79,6 +80,7 @@ void simple_game()
         print_unordered_map(train_info);
         // drawer.draw(train_info);
         traj.clear();
+        printf("Episode %d done.\n", e);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
