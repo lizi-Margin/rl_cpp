@@ -4,15 +4,19 @@
 #include "draw/csv_drawer.h"
 #include "rubbish_can.h"
 #include <c10/core/ScalarType.h>
-#include <cstdio>
+#include <cassert>
 #include <chrono>
+#include <spdlog/common.h>
+#include <spdlog/spdlog.h>
 
 draw::csv_drawer drawer("./train_info.csv");
 
 void simple_game()
 {
+    auto logger = get_logger("simple_game()");
+
     // The game is: If the action matches the max dim of input, give a reward of 1, otherwise -1
-    std::printf("Simple game starting...\n");
+    logger->info("Simple game starting...");
 
     unsigned int N_parallel = 1;
     unsigned int N_episode = 5000;
@@ -32,10 +36,10 @@ void simple_game()
 
     for (unsigned int e = 0; e < N_episode; e += 1)
     {
-        std::printf("Episode %d begins:\n", e);
+        logger->info("Episode {} begins", e);
         for (unsigned int step = 0; step < episode_steps; step += 1)
         {
-            std::printf("Episode %d, Step %d\n", e, step);
+            logger->debug("Episode {}, Step {}", e, step);
             std::vector<torch::Tensor> a_v_logp;
             {
                 torch::NoGradGuard no_grad;
@@ -48,12 +52,12 @@ void simple_game()
             auto done = e == episode_steps - 1 ? \
                 torch::ones({N_parallel, 1}) : torch::zeros({N_parallel, 1});
             
-            std::cout << "Obs: " << obs << std::endl;
-            std::cout << "Action: " << action << std::endl;
-            std::cout << "Value: " << value.sizes() << std::endl;
-            std::cout << "actLogProbs: " << actLogProbs.sizes() << std::endl;
-            std::cout << "Reward: " << reward << std::endl;
-            std::cout << "Done: " << done.sizes() << std::endl;
+            // std::cout << "Obs: " << obs << std::endl;
+            // std::cout << "Action: " << action << std::endl;
+            // std::cout << "Value: " << value << std::endl;
+            // std::cout << "actLogProbs: " << actLogProbs << std::endl;
+            // std::cout << "Reward: " << reward << std::endl;
+            // std::cout << "Done: " << done << std::endl;
 
             traj.remember(
                 obs[0],
@@ -66,7 +70,7 @@ void simple_game()
             
             obs = torch::randint(0, 10, {N_parallel, obs_dim}).to(torch::kFloat);
         }
-        std::printf("\r\n");
+        logger->info("Episode {} ends", e);
 
         // torch::Tensor next_value;
         // {
@@ -74,23 +78,25 @@ void simple_game()
         //     next_value = ac->get_values(traj.get_observations()[-1]).detach();
         // }
 
-        std::printf("Episode %d begins to update:\n", e);
+        logger->info("Episode {} begins to update:\n", e);
         auto train_info = trainer.update(traj);
-        std::printf("Episode %d finished, Train info:\n", e);
+        logger->info("Episode {} finished, Train info:\n", e);
         print_unordered_map(train_info);
-        // drawer.draw(train_info);
+        drawer.draw(train_info);
         traj.clear();
-        printf("Episode %d done.\n", e);
+        logger->info("Episode %d done.\n", e);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count(); 
 
-    std::printf("Training completed in %ld seconds.\n", duration);
+    logger->info("Training completed in {} seconds.\n", duration);
 }
 
 
 int main() {
+    spdlog::set_pattern("%^[%l]%$ [%s:%# %!] %v");
+    spdlog::set_level(spdlog::level::trace);
     at::set_num_threads(12);
     at::set_num_interop_threads(12);
     simple_game();

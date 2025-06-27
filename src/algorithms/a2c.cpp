@@ -41,8 +41,8 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
   auto obs = traj.get_observations();
   auto action = traj.get_actions();
 
-  std::cout << "obs: " << obs << std::endl;
-  std::cout << "action: " << action << std::endl;
+  // std::cout << "obs: " << obs << std::endl;
+  // std::cout << "action: " << action << std::endl;
 
   auto v_logp_e_p = actor_and_critic->evaluate_actions(obs, action);
 

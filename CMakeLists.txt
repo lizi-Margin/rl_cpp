@@ -31,6 +31,9 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     )
 endif(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
+
+find_package(spdlog REQUIRED)
+
 # Dependencies
 ## PyTorch
 if (NOT TORCH_FOUND)
@@ -70,8 +73,8 @@ target_link_libraries(rl PRIVATE
     torch 
     ${TORCH_LIBRARIES}
     CUDA::cudart  # 链接 CUDA 运行时库
+    spdlog::spdlog
 )
-
 # Recurse into source tree
 add_subdirectory(src)
 

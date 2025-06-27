@@ -1,5 +1,6 @@
 /.cache
 /.vscode
+/.marscode
 /build
 /*.csv
 /*.csv.bac
