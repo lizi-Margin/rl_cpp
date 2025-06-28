@@ -4,6 +4,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <math.h>
+#include <stdio.h>
 
 #define CEIL_DIV(a, b) (((a) + (b) - 1) / (b))
 
@@ -311,6 +312,7 @@ void cuda_alloc_mem(IntermediateData *data, int batch_size, int input_dim,
 }
 
 void cuda_free_mem(IntermediateData *data) {
+  printf("cuda_free_mem called");
   CHECK_CUDA(cudaFree(data->d_shared_output));
   CHECK_CUDA(cudaFree(data->d_actor_hidden));
   CHECK_CUDA(cudaFree(data->d_critic_hidden));
@@ -479,22 +481,22 @@ void cuda_forward(const float *input, int batch_size, int input_dim,
                         batch_size * output_dim * sizeof(float),
                         cudaMemcpyDeviceToHost));
 
-  // 释放设备内存 (保留中间结果)
-  CHECK_CUDA(cudaFree(d_input));
-  CHECK_CUDA(cudaFree(d_shared_w));
-  CHECK_CUDA(cudaFree(d_shared_b));
-  CHECK_CUDA(cudaFree(d_actor_fc1_w));
-  CHECK_CUDA(cudaFree(d_actor_fc1_b));
-  CHECK_CUDA(cudaFree(d_actor_fc2_w));
-  CHECK_CUDA(cudaFree(d_actor_fc2_b));
-  CHECK_CUDA(cudaFree(d_actor_head_w));
-  CHECK_CUDA(cudaFree(d_actor_head_b));
-  CHECK_CUDA(cudaFree(d_critic_fc1_w));
-  CHECK_CUDA(cudaFree(d_critic_fc1_b));
-  CHECK_CUDA(cudaFree(d_critic_fc2_w));
-  CHECK_CUDA(cudaFree(d_critic_fc2_b));
-  CHECK_CUDA(cudaFree(d_critic_head_w));
-  CHECK_CUDA(cudaFree(d_critic_head_b));
+  // // 释放设备内存 (保留中间结果)
+  // CHECK_CUDA(cudaFree(d_input));
+  // CHECK_CUDA(cudaFree(d_shared_w));
+  // CHECK_CUDA(cudaFree(d_shared_b));
+  // CHECK_CUDA(cudaFree(d_actor_fc1_w));
+  // CHECK_CUDA(cudaFree(d_actor_fc1_b));
+  // CHECK_CUDA(cudaFree(d_actor_fc2_w));
+  // CHECK_CUDA(cudaFree(d_actor_fc2_b));
+  // CHECK_CUDA(cudaFree(d_actor_head_w));
+  // CHECK_CUDA(cudaFree(d_actor_head_b));
+  // CHECK_CUDA(cudaFree(d_critic_fc1_w));
+  // CHECK_CUDA(cudaFree(d_critic_fc1_b));
+  // CHECK_CUDA(cudaFree(d_critic_fc2_w));
+  // CHECK_CUDA(cudaFree(d_critic_fc2_b));
+  // CHECK_CUDA(cudaFree(d_critic_head_w));
+  // CHECK_CUDA(cudaFree(d_critic_head_b));
 
   // 销毁CUDA流
   CHECK_CUDA(cudaStreamDestroy(actor_stream));
@@ -797,32 +799,32 @@ void cuda_backward(const float *input, IntermediateData *fwd_data,
                         output_dim * sizeof(float), cudaMemcpyDeviceToHost));
 
   // 释放设备内存
-  CHECK_CUDA(cudaFree(d_input));
-  CHECK_CUDA(cudaFree(d_actor_fc2_w));
-  CHECK_CUDA(cudaFree(d_critic_fc2_w));
-  CHECK_CUDA(cudaFree(d_actor_head_w));
-  CHECK_CUDA(cudaFree(d_critic_head_w));
-  CHECK_CUDA(cudaFree(d_grad_actor_output));
-  CHECK_CUDA(cudaFree(d_grad_critic_output));
-  CHECK_CUDA(cudaFree(d_grad_shared_w));
-  CHECK_CUDA(cudaFree(d_grad_shared_b));
-  CHECK_CUDA(cudaFree(d_grad_actor_fc1_w));
-  CHECK_CUDA(cudaFree(d_grad_actor_fc1_b));
-  CHECK_CUDA(cudaFree(d_grad_actor_fc2_w));
-  CHECK_CUDA(cudaFree(d_grad_actor_fc2_b));
-  CHECK_CUDA(cudaFree(d_grad_actor_head_w));
-  CHECK_CUDA(cudaFree(d_grad_actor_head_b));
-  CHECK_CUDA(cudaFree(d_grad_critic_fc1_w));
-  CHECK_CUDA(cudaFree(d_grad_critic_fc1_b));
-  CHECK_CUDA(cudaFree(d_grad_critic_fc2_w));
-  CHECK_CUDA(cudaFree(d_grad_critic_fc2_b));
-  CHECK_CUDA(cudaFree(d_grad_critic_head_w));
-  CHECK_CUDA(cudaFree(d_grad_critic_head_b));
-  CHECK_CUDA(cudaFree(d_grad_actor_fc2_output));
-  CHECK_CUDA(cudaFree(d_grad_critic_fc2_output));
-  CHECK_CUDA(cudaFree(d_grad_actor_hidden));
-  CHECK_CUDA(cudaFree(d_grad_critic_hidden));
-  CHECK_CUDA(cudaFree(d_grad_shared_output));
+  // CHECK_CUDA(cudaFree(d_input));
+  // CHECK_CUDA(cudaFree(d_actor_fc2_w));
+  // CHECK_CUDA(cudaFree(d_critic_fc2_w));
+  // CHECK_CUDA(cudaFree(d_actor_head_w));
+  // CHECK_CUDA(cudaFree(d_critic_head_w));
+  // CHECK_CUDA(cudaFree(d_grad_actor_output));
+  // CHECK_CUDA(cudaFree(d_grad_critic_output));
+  // CHECK_CUDA(cudaFree(d_grad_shared_w));
+  // CHECK_CUDA(cudaFree(d_grad_shared_b));
+  // CHECK_CUDA(cudaFree(d_grad_actor_fc1_w));
+  // CHECK_CUDA(cudaFree(d_grad_actor_fc1_b));
+  // CHECK_CUDA(cudaFree(d_grad_actor_fc2_w));
+  // CHECK_CUDA(cudaFree(d_grad_actor_fc2_b));
+  // CHECK_CUDA(cudaFree(d_grad_actor_head_w));
+  // CHECK_CUDA(cudaFree(d_grad_actor_head_b));
+  // CHECK_CUDA(cudaFree(d_grad_critic_fc1_w));
+  // CHECK_CUDA(cudaFree(d_grad_critic_fc1_b));
+  // CHECK_CUDA(cudaFree(d_grad_critic_fc2_w));
+  // CHECK_CUDA(cudaFree(d_grad_critic_fc2_b));
+  // CHECK_CUDA(cudaFree(d_grad_critic_head_w));
+  // CHECK_CUDA(cudaFree(d_grad_critic_head_b));
+  // CHECK_CUDA(cudaFree(d_grad_actor_fc2_output));
+  // CHECK_CUDA(cudaFree(d_grad_critic_fc2_output));
+  // CHECK_CUDA(cudaFree(d_grad_actor_hidden));
+  // CHECK_CUDA(cudaFree(d_grad_critic_hidden));
+  // CHECK_CUDA(cudaFree(d_grad_shared_output));
 
   // 销毁CUDA流
   CHECK_CUDA(cudaStreamDestroy(actor_stream));

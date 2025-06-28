@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <iostream>
+#include "rubbish_can.h"
 
 namespace draw {
 
@@ -16,6 +17,8 @@ class csv_drawer {
     inline csv_drawer(std::string filename) : filename(filename), mem(nullptr) {};
 
     inline void draw(statistic stat) {
+      auto logger = get_logger("csv_drawer::draw");
+      logger->debug("called");
       if (mem == nullptr) {
         init_mem(stat); 
         write_to_file();
@@ -23,6 +26,7 @@ class csv_drawer {
         append_mem(stat);
         append_to_file();
       }
+      logger->debug("returned");
     }
   private:
     inline void init_mem(statistic stat) {
@@ -57,9 +61,11 @@ class csv_drawer {
     }
 
     inline void write_to_file() {
+      auto logger = get_logger("csv_drawer::write_to_file");
+      logger->debug("called");
       if (file_exists()) {
         //红色
-        std::cout << "\033[31m" << "file exists, remove old file" << "\033[0m" << std::endl;
+        logger->info("file exists, remove old file");
         //mv old.csv to old.csv.bac and create new file
         std::string command = "mv " + filename + " " + filename + ".bac";
         int ret = system(command.c_str());
@@ -108,6 +114,7 @@ class csv_drawer {
       }
       file.close();
       clear_mem();
+      logger->debug("returned");
     }
     
     inline void append_to_file() {

@@ -4,6 +4,7 @@
 
 #include "rl/model/mlp_ac_cuda.h"
 #include "rl/model/output_layers.h"
+#include "rubbish_can.h"
 
 using namespace torch::nn;
 
@@ -64,6 +65,8 @@ std::vector<torch::Tensor> MlpAC::act(torch::Tensor obs) {
 }
 
 std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
+  auto logger = get_logger("MlpAC::forward");
+  logger->debug("called");
   if (obs.sizes().size() != 2) {
     throw std::runtime_error("Input tensor must have 2 dimensions");
   }
@@ -73,7 +76,7 @@ std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
   assert(input_obs_dim == obs_dim);
 
   // 获取权重和偏置
-  // printf("Get weights and biases...\n");
+  logger->debug("converting Tensor to float* ...");
   auto shared_fc_w = shared[0]
                          ->as<Linear>()
                          ->weight.data()
@@ -141,6 +144,7 @@ std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
       critic_head->bias.data().cpu().contiguous().data_ptr<float>();
 
   auto input = obs.cpu().contiguous().data_ptr<float>();
+  logger->debug("converting Tensor to float* ... done");
 
   // 分配输出内存
   // ...existing code...
@@ -151,12 +155,14 @@ std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
   auto critic_output_data = std::make_unique<float[]>(batch_size * 1);
 
   // 调用CUDA前向传播函数
+  logger->debug("Calling CUDA forward function...");
   cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
                shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
                actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
                critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
                critic_head_b, actor_output_data, critic_output_data.get(),
                &intermediates);
+  logger->debug("Calling CUDA forward function... done");
 
   // 将结果转换回PyTorch张量
   auto actor_output = actor_output_tensor.to(obs.device());
@@ -171,11 +177,18 @@ std::vector<torch::Tensor> MlpAC::forward(torch::Tensor obs) {
   auto actLogProbs = dist->log_prob(action);
 
   // 不需要手动delete，智能指针会自动释放
+  logger->debug("returned");
   return {action.to(torch::kFloat), critic_output, actLogProbs};
 }
 
-std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
-                                                   torch::Tensor actions) {
+std::vector<torch::Tensor> MlpAC::evaluate_actions
+(
+  torch::Tensor obs,
+  torch::Tensor actions
+) 
+{
+  auto logger = get_logger("MlpAC::evaluate_actions");
+  logger->debug("called");
   if (obs.sizes().size() != 2) {
     throw std::runtime_error("Input tensor must have 2 dimensions");
   }
@@ -185,6 +198,7 @@ std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
   assert(input_obs_dim == obs_dim);
 
   // 获取权重和偏置
+  logger->debug("converting Tensor to float* ...");
   auto shared_fc_w = shared[0]
                          ->as<Linear>()
                          ->weight.data()
@@ -253,22 +267,24 @@ std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
       critic_head->bias.data().cpu().contiguous().data_ptr<float>();
 
   auto input = obs.cpu().contiguous().data_ptr<float>();
+  logger->debug("converting Tensor to float* ... done");
 
   // 分配输出内存，使用智能指针
+  logger->debug("Allocating memory for actor and critic outputs...");
   auto actor_output_data = std::make_unique<float[]>(batch_size * n_actions);
   auto critic_output_data = std::make_unique<float[]>(batch_size * 1);
+  logger->debug("Allocating memory for actor and critic outputs... done");
 
-  // printf("Allocating memory for actor and critic outputs...\n");
-
-  // printf("Calling CUDA forward function...\n");
 
   // 调用CUDA前向传播函数
+  logger->debug("Calling CUDA forward function...");
   cuda_forward(input, batch_size, input_obs_dim, hidden_dim, n_actions,
                shared_fc_w, shared_fc_b, actor_fc1_w, actor_fc1_b, actor_fc2_w,
                actor_fc2_b, actor_head_w, actor_head_b, critic_fc1_w,
                critic_fc1_b, critic_fc2_w, critic_fc2_b, critic_head_w,
                critic_head_b, actor_output_data.get(), critic_output_data.get(),
                &intermediates);
+  logger->debug("Calling CUDA forward function... done");
 
   // 将结果转换回PyTorch张量
   auto actor_output = torch::from_blob(actor_output_data.get(),
@@ -301,6 +317,7 @@ std::vector<torch::Tensor> MlpAC::evaluate_actions(torch::Tensor obs,
   distEntropy = distEntropy.unsqueeze(1);
   auto probs = dist->get_probs();
 
+  logger->debug("returned");
   return {critic_output, actLogProbs, distEntropy, probs};
 }
 

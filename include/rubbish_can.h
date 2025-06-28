@@ -1,3 +1,4 @@
+#pragma once
 #include <unordered_map>
 #include <string>
 #include <iostream>
@@ -13,6 +14,8 @@ inline std::shared_ptr<spdlog::logger> get_logger(std::string name)
     if (!logger) {
         logger = spdlog::stdout_color_mt(name);
         logger->set_pattern("%^[%l]%$\033[1;35m[%n]\033[0m %v");
+        logger->set_level(spdlog::level::trace);
+        logger->flush_on(spdlog::level::trace); 
     }
 
     return logger;

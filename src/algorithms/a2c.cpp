@@ -8,12 +8,17 @@
 #include <torch/optim/sgd.h>
 #include <torch/torch.h>
 #include <unordered_map>
+#include "rubbish_can.h"
 
 namespace rl {
 
 std::unordered_map<std::string, float> A2C::update(Traj &traj) {
-  printf("traj finalize...\n");
+  auto logger = get_logger("A2C::update");
+  logger->debug("called");
+
+  logger->debug("traj finalize...");
   traj.finalize();
+  logger->debug("traj finalize... done");
 
   if (!traj.get_observations().defined()) {
     throw std::runtime_error("Observations tensor is undefined");
@@ -28,7 +33,7 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
     throw std::runtime_error("Returns tensor is undefined");
   }
 
-  printf("Calculating loss...\n");
+  logger->debug("extracting obs, action, reward, etc from traj...");
 
   auto reward = traj.get_rewards();
   auto reward_dim = reward.size(-1);
@@ -43,24 +48,30 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
 
   // std::cout << "obs: " << obs << std::endl;
   // std::cout << "action: " << action << std::endl;
+  logger->debug("extracting obs, action, reward, etc from traj... done");
 
   auto v_logp_e_p = actor_and_critic->evaluate_actions(obs, action);
 
+  logger->debug("checking critic_output, actLogProbs, distEntropy, probs...");
   for (size_t i = 0; i < v_logp_e_p.size(); ++i) {
+    logger->debug("checking critic_output, actLogProbs, distEntropy, probs... i={}", i);
     if (!v_logp_e_p[i].defined()) {
       throw std::runtime_error("Output tensor " + std::to_string(i) +
                                " from evaluate_actions is undefined");
     }
   }
+  logger->debug("checking critic_output, actLogProbs, distEntropy, probs... done");
 
-  printf("Calculating loss...\n");
 
+  logger->debug("reshaping...");
   auto distEntropy = v_logp_e_p[2].view({1, num_steps, 1});
   auto values = v_logp_e_p[0].view({1, num_steps, 1});
   auto actLogProbs = v_logp_e_p[1].view({1, num_steps, 1});
 
   auto advantages = traj.get_returns().view({1, num_steps, 1}) - values;
+  logger->debug("reshaping... done");
 
+  logger->debug("Calculating loss...");
   auto value_loss = advantages.pow(2).mean();
   auto action_loss = -(advantages.detach() * actLogProbs).mean();
   auto distEntropy_loss = -distEntropy.mean();
@@ -72,12 +83,13 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
 
   auto loss = (value_loss * value_loss_coef + action_loss * actor_loss_coef +
                distEntropy_loss * entropy_coef);
+  logger->debug("Calculating loss... done");
 
   //   Step optimizer
   //   optimizer->zero_grad();
 
   //   计算梯度
-  printf("Calculating gradients...\n");
+  logger->debug("preparing backward call...");
   auto grad_actor_output = actLogProbs.cpu().contiguous().data_ptr<float>();
   auto grad_critic_output = advantages.cpu().contiguous().data_ptr<float>();
 
@@ -134,9 +146,10 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
   auto grad_critic_fc2_b = std::make_unique<float[]>(output_dim);
   auto grad_critic_head_w = std::make_unique<float[]>(output_dim * output_dim);
   auto grad_critic_head_b = std::make_unique<float[]>(output_dim);
+  logger->debug("preparing backward call... done");
 
   // 调用CUDA反向传播函数
-  printf("Calling CUDA backward function...\n");
+  logger->debug("Calling CUDA backward function...");
   cuda_backward(
       obs.cpu().contiguous().data_ptr<float>(),
       actor_and_critic->get_intermediates(), grad_actor_output,
@@ -147,15 +160,15 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
       grad_actor_head_w.get(), grad_actor_head_b.get(), grad_critic_fc1_w.get(),
       grad_critic_fc1_b.get(), grad_critic_fc2_w.get(), grad_critic_fc2_b.get(),
       grad_critic_head_w.get(), grad_critic_head_b.get());
+  logger->debug("Calling CUDA backward function... done");
 
   // 更新参数
-  printf("Updating parameters...\n");
+  logger->debug("Updating parameters...");
   auto update_param = [&](float *param, const float *grad, int size) {
     for (int i = 0; i < size; ++i) {
       param[i] -= original_learning_rate * grad[i];
     }
   };
-
   update_param(shared_fc_w, grad_shared_w.get(), hidden_dim * input_dim);
   update_param(shared_fc_b, grad_shared_b.get(), hidden_dim);
   update_param(actor_fc1_w, grad_actor_fc1_w.get(), hidden_dim * hidden_dim);
@@ -171,7 +184,9 @@ std::unordered_map<std::string, float> A2C::update(Traj &traj) {
   update_param(critic_head_w, grad_critic_head_w.get(),
                output_dim * output_dim);
   update_param(critic_head_b, grad_critic_head_b.get(), output_dim);
+  logger->debug("Updating parameters... done");
 
+  logger->debug("returned");
   return {{"Value loss", value_loss.item().toFloat()},
           {"Action loss", action_loss.item().toFloat()},
           {"distEntropy loss", distEntropy_loss.item().toFloat()},

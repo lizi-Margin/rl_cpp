@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <torch/torch.h>
 #include <vector>
+#include "rubbish_can.h"
 
 namespace rl {
 
@@ -63,6 +64,8 @@ public:
   }
 
   void clear() {
+    auto logger = get_logger("Traj::clear");
+    logger->debug("called");
     observations_.clear();
     actions_.clear();
     rewards_.clear();
@@ -71,6 +74,7 @@ public:
     dones_.clear();
     current_step_ = 0;
     frozen_ = false;
+    logger->debug("returned");
   }
 
   size_t current_step() const { return current_step_; }

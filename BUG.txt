@@ -1,0 +1,28 @@
+[debug][csv_drawer::draw] called
+[debug][csv_drawer::write_to_file] called
+[info][csv_drawer::write_to_file] file exists, remove old file
+[debug][csv_drawer::write_to_file] returned
+[debug][csv_drawer::draw] returned
+[debug][Traj::clear] called
+corrupted size vs. prev_size
+./build.sh: line 14: 151518 Aborted                 (core dumped) ./build/rl
+
+[debug][simple_game()] Episode 1, Step 7
+[debug][MlpAC::forward] called
+[debug][MlpAC::forward] converting Tensor to float* ...
+[debug][MlpAC::forward] converting Tensor to float* ... done
+[debug][MlpAC::forward] Calling CUDA forward function...
+./build.sh: line 14: 147242 Segmentation fault      (core dumped) ./build/rl
+
+[debug][A2C::update] extracting obs, action, reward, etc from traj...
+[debug][A2C::update] extracting obs, action, reward, etc from traj... done
+[debug][MlpAC::evaluate_actions] called
+[debug][MlpAC::evaluate_actions] converting Tensor to float* ...
+[debug][MlpAC::evaluate_actions] converting Tensor to float* ... done
+[debug][MlpAC::evaluate_actions] Allocating memory for actor and critic outputs...
+[debug][MlpAC::evaluate_actions] Allocating memory for actor and critic outputs... done
+[debug][MlpAC::evaluate_actions] Calling CUDA forward function...
+[debug][MlpAC::evaluate_actions] Calling CUDA forward function... done
+[debug][MlpAC::evaluate_actions] returned
+free(): invalid next size (fast)
+./build.sh: line 14: 149342 Aborted                 (core dumped) ./build/rl

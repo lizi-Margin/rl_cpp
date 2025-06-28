@@ -78,13 +78,12 @@ void simple_game()
         //     next_value = ac->get_values(traj.get_observations()[-1]).detach();
         // }
 
-        logger->info("Episode {} begins to update:\n", e);
+        logger->info("Episode {} begins to update:", e);
         auto train_info = trainer.update(traj);
-        logger->info("Episode {} finished, Train info:\n", e);
         print_unordered_map(train_info);
         drawer.draw(train_info);
         traj.clear();
-        logger->info("Episode %d done.\n", e);
+        logger->info("Episode {} done.", e);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -95,8 +94,9 @@ void simple_game()
 
 
 int main() {
-    spdlog::set_pattern("%^[%l]%$ [%s:%# %!] %v");
+    spdlog::set_pattern("%^[%l]%$ %v");
     spdlog::set_level(spdlog::level::trace);
+    spdlog::flush_on(spdlog::level::trace); 
     at::set_num_threads(12);
     at::set_num_interop_threads(12);
     simple_game();
